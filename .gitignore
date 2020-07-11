@@ -1,6 +1,9 @@
 test
 .idea
+.vscode
 node_modules
 package-lock.json
 out
 secrets
+runtime
+pkg/setting/setting.go

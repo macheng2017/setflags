@@ -1,109 +1,163 @@
 package v1
 
 import (
-	"bytes"
-	"encoding/json"
 	"fmt"
-	"github.com/gin-gonic/gin"
-	"github.com/gofrs/uuid"
-	"io/ioutil"
-	"log"
-	"mime/multipart"
 	"net/http"
 	"set-flags/models"
 	"set-flags/pkg/e"
+	"set-flags/pkg/logging"
 	"set-flags/pkg/setting"
-	"strconv"
+	"set-flags/schemas"
+
+	"github.com/gin-gonic/gin"
+	"github.com/gofrs/uuid"
 )
 
-// list all the flags
+// ListFlags list all the flags
+// @Summary 获取全部Flag
+// @Produce  json
+// @Param current_page query int false "CurrentPage"
+// @Param page_size query int false "PageSize"
+// @Success 200 {string} json "{"code":200,"data":{},"msg":"ok"}"
+// @Router /flags [get]
 func ListFlags(c *gin.Context) {
 	code := e.INVALID_PARAMS
-	currentPage_ := c.DefaultQuery("current_page", "1")
-	pageSize_ := c.DefaultQuery("page_size", setting.PageSize)
 
-	currentPage, err := strconv.Atoi(currentPage_)
-	if err != nil {
+	var header schemas.Header
+
+	if err := c.BindHeader(&header); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
-			"code": code,
-			"msg": e.GetMsg(code),
+			"code": 400,
+			"msg":  err.Error(),
 			"data": make(map[string]interface{}),
 		})
 		return
 	}
+	userID, _ := uuid.FromString(header.XUSERID)
 
-	pageSize, err := strconv.Atoi(pageSize_)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"code": code,
-			"msg": e.GetMsg(code),
-			"data": make(map[string]interface{}),
-		})
-		return
+	var pagination schemas.Pagination
+
+	c.ShouldBindQuery(&pagination)
+
+	if pagination.CurrentPage == 0 {
+		pagination.CurrentPage = 1
 	}
 
-	data := models.GetAllFlags(pageSize, currentPage)
+	if pagination.PageSize == 0 {
+		pagination.PageSize = setting.GetConfig().App.PageSize
+	}
+
+	// data, total := models.GetAllFlags(pagination.PageSize, pagination.CurrentPage)
+	data, total := models.GetFlagsWithVerified(pagination.PageSize, pagination.CurrentPage, userID)
 
 	code = e.SUCCESS
 	c.JSON(http.StatusOK, gin.H{
-		"code": code,
-		"msg": e.GetMsg(code),
-		"data": data,
+		"code":  code,
+		"msg":   e.GetMsg(code),
+		"data":  data,
+		"total": total,
 	})
 }
 
-// create a flag
+// CreateFlag create a flag
+// @Summary 创建Flag
+// @Produce json
+// @Param payer_name body string false "创建者的name"
+// @Param task body string true "任务名称"
+// @Success 200 {string} json "{"code":200,"data":{},"msg":"ok"}"
+// @Router /flag [post]
 func CreateFlag(c *gin.Context) {
 	code := e.INVALID_PARAMS
-	var flag map[string]interface{}
 
-	if c.ShouldBind(&flag) == nil {
-		fmt.Println(flag)
-		payerId, err := uuid.FromString(flag["payer_id"].(string))
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{
-				"code": code,
-				"msg":  err.Error(),
-				"data": make(map[string]interface{}),
-			})
-			return
-		}
+	var header schemas.Header
 
-		assetId, err := uuid.FromString(flag["asset_id"].(string))
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{
-				"code": code,
-				"msg":  err.Error(),
-				"data": make(map[string]interface{}),
-			})
-			return
-		}
-
-		flag["payer_id"] = payerId
-
-		// find user
-		user := models.FindUserById(payerId.String())
-		fmt.Println(user)
-		// set payer name
-		flag["payer_name"] = user.FullName
-
-		flag["asset_id"] = assetId
-		models.CreateFlag(flag)
+	if err := c.BindHeader(&header); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code": 400,
+			"msg":  err.Error(),
+			"data": make(map[string]interface{}),
+		})
+		return
 	}
+	userID, _ := uuid.FromString(header.XUSERID)
+
+	if !models.UserExist(userID) {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code": code,
+			"msg":  fmt.Sprintf("not found current user."),
+			"data": make(map[string]interface{}),
+		})
+		return
+	}
+
+	var flag schemas.FlagSchema
+
+	if err := c.ShouldBindJSON(&flag); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code": code,
+			"msg":  err.Error(),
+			"data": make(map[string]interface{}),
+		})
+		return
+	}
+
+	// find user
+	user := models.FindUserByID(userID)
+	flag.PayerID = userID
+	traceID, _ := uuid.NewV1()
+
+	flagID := models.CreateFlag(&flag, user)
+
+	assetID := flag.AssetID.String()
+	assetID = "965e5c6e-434c-3fa9-b780-c50f43cd955c"
+	memo := "转账给励志机器人."
+	appID := setting.GetConfig().Bot.ClientID.String()
+
+	payment := models.Payment{
+		TraceID:    traceID,
+		FlagID:     flagID,
+		AssetID:    assetID,
+		OpponentID: appID,
+		Amount:     fmt.Sprintf("%f", flag.Amount),
+		Memo:       memo,
+	}
+
+	models.CreatePayment(payment)
+
+	data := map[string]interface{}{
+		"recipient": appID,
+		"asset":     assetID,
+		"amount":    flag.Amount,
+		"trace":     traceID,
+		"memo":      memo,
+	}
+
 	code = e.SUCCESS
 	c.JSON(http.StatusCreated, gin.H{
 		"code": code,
 		"msg":  e.GetMsg(code),
-		"data": make(map[string]interface{}),
+		"data": data,
 	})
 }
 
-// Update an existing flag
+// UpdateFlag Update an existing flag
+// only witness can update flag
 func UpdateFlag(c *gin.Context) {
 	code := e.INVALID_PARAMS
-	flagId := c.Param("id")
 
-	_, err := uuid.FromString(flagId)
+	var header schemas.Header
+
+	if err := c.BindHeader(&header); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code": 400,
+			"msg":  err.Error(),
+			"data": make(map[string]interface{}),
+		})
+		return
+	}
+	userID, _ := uuid.FromString(header.XUSERID)
+
+	flagID, err := uuid.FromString(c.Param("id"))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"code": code,
@@ -113,18 +167,7 @@ func UpdateFlag(c *gin.Context) {
 		return
 	}
 
-	op := c.Param("op")
-
-	if op != "yes" && op != "no" && op != "done" {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"code": code,
-			"msg":  fmt.Sprintf("op: %s is invalid.", op),
-			"data": make(map[string]interface{}),
-		})
-		return
-	}
-
-	if !models.FLagExists(flagId) {
+	if !models.FlagExists(flagID) {
 		c.JSON(http.StatusNotFound, gin.H{
 			"code": 404,
 			"msg":  "Flag not found.",
@@ -132,225 +175,173 @@ func UpdateFlag(c *gin.Context) {
 		})
 		return
 	}
+	flag := models.FindFlagByID(flagID)
 
-	flag := models.FindFlagByID(flagId)
+	op := c.Param("op")
 
-	if flag.Status != "done" {
+	if flag.PayerID == userID && op == "done" {
+		code = e.SUCCESS
+		models.UpdateFlagStatus(flagID, op)
+	} else if flag.PayerID != userID && (op == "yes" || op == "no") {
+		code = e.SUCCESS
+		models.UpsertWitness(flagID, userID, op)
+	}
+
+	if code != e.SUCCESS {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"code": code,
-			"msg":  "not yet upload the evidence.",
+			"msg":  "invalid opreration",
 			"data": make(map[string]interface{}),
 		})
-		return
-	}
-
-	code = e.SUCCESS
-	c.JSON(http.StatusBadRequest, gin.H{
-		"code": code,
-		"msg":  e.GetMsg(code),
-		"data": make(map[string]interface{}),
-	})
-}
-
-// list all flags of the user
-func FindFlagsByUserID(c *gin.Context) {
-	code := e.INVALID_PARAMS
-	userId := c.GetHeader("x-user-id")
-
-	currentPage_ := c.DefaultQuery("current_page", "1")
-	pageSize_ := c.DefaultQuery("page_size", setting.PageSize)
-
-	currentPage, err := strconv.Atoi(currentPage_)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"code": code,
-			"msg": e.GetMsg(code),
-			"data": make(map[string]interface{}),
-		})
-		return
-	}
-
-	pageSize, err := strconv.Atoi(pageSize_)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"code": code,
-			"msg": e.GetMsg(code),
-			"data": make(map[string]interface{}),
-		})
-		return
-	}
-
-	_, err = uuid.FromString(userId)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"code": code,
-			"msg":  err.Error(),
-			"data": make(map[string]interface{}),
-		})
-		return
-	}
-
-	flags := models.FindFlagsByUserID(userId, currentPage, pageSize)
-
-	code = e.SUCCESS
-	c.JSON(http.StatusOK, gin.H{
-		"code": code,
-		"msg":  e.GetMsg(code),
-		"data": flags,
-	})
-}
-
-// upload evidence
-func UploadEvidence(c *gin.Context) {
-	code := e.INVALID_PARAMS
-	userId := c.GetHeader("user_id")
-	flagId := c.Query("flag_id")
-	attachmentId := c.Param("attachment_id")
-
-	fmt.Sprintf("attachmentId: %s, flagId: %s", attachmentId, flagId)
-
-	type_ := c.Query("type")
-
-	if type_ != "image" && type_ != "audio" && type_ != "video" && type_ != "document" {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"code": code,
-			"msg":  fmt.Sprintf("type: %s is invalid.", type_),
-			"data": make(map[string]interface{}),
-		})
-		return
-	}
-
-	if !models.FLagExists(flagId) {
-		c.JSON(http.StatusNotFound, gin.H{
-			"code": 404,
-			"msg":  "not found specific flag.",
-			"data": make(map[string]interface{}),
-		})
-		return
-	}
-
-	fileHeader, err := c.FormFile("file")
-	if err != nil {
-		code = e.ERROR
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"code": code,
-			"msg":  err.Error(),
-			"data": make(map[string]interface{}),
-		})
-		return
-	}
-
-	log.Println(fileHeader.Filename)
-
-	client := &http.Client{}
-	// read access token from db
-	accessToken, _ := models.FindUserToken(userId)
-
-	viewUrl, err := UploadAttachment(client, fileHeader, accessToken)
-	if err != nil {
-		code = e.ERROR_UPLOAD_ATTACHMENT
+	} else {
 		c.JSON(http.StatusOK, gin.H{
 			"code": code,
-			"msg": e.GetMsg(code),
+			"msg":  e.GetMsg(code),
+			"data": make(map[string]interface{}),
+		})
+	}
+}
+
+// FindFlagsByUserID list all flags of the user
+func FindFlagsByUserID(c *gin.Context) {
+	code := e.INVALID_PARAMS
+
+	var pagination schemas.Pagination
+
+	c.ShouldBindQuery(&pagination)
+
+	if pagination.CurrentPage == 0 {
+		pagination.CurrentPage = 1
+	}
+
+	if pagination.PageSize == 0 {
+		pagination.PageSize = setting.GetConfig().App.PageSize
+	}
+
+	var header schemas.Header
+
+	if err := c.BindHeader(&header); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code": 400,
+			"msg":  err.Error(),
+			"data": make(map[string]interface{}),
+		})
+		return
+	}
+	userID, _ := uuid.FromString(header.XUSERID)
+
+	flags, total := models.FindFlagsByUserID(userID, pagination.CurrentPage, pagination.PageSize)
+
+	code = e.SUCCESS
+	c.JSON(http.StatusOK, gin.H{
+		"code":  code,
+		"msg":   e.GetMsg(code),
+		"data":  flags,
+		"total": total,
+	})
+}
+
+// GetWitnesses list all witnesses of the flag
+func GetWitnesses(c *gin.Context) {
+	code := e.INVALID_PARAMS
+
+	var pagination schemas.Pagination
+
+	c.ShouldBindQuery(&pagination)
+
+	if pagination.CurrentPage == 0 {
+		pagination.CurrentPage = 1
+	}
+
+	if pagination.PageSize == 0 {
+		pagination.PageSize = setting.GetConfig().App.PageSize
+	}
+
+	flagID, err := uuid.FromString(c.Param("id"))
+
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code": code,
+			"msg":  err.Error(),
 			"data": make(map[string]interface{}),
 		})
 		return
 	}
 
-	attachmentID, _ := uuid.FromString(attachmentId)
-	flagID, _ := uuid.FromString(flagId)
-	models.CreateEvidence(attachmentID, flagID, type_, viewUrl)
-
-	// update flag status to `done`
-	models.UpdateFlagStatus(flagId, "done")
+	witnesses, total := models.GetWitnessSchema(flagID, pagination.PageSize, pagination.CurrentPage)
 
 	code = e.SUCCESS
 	c.JSON(http.StatusOK, gin.H{
-		"code": code,
-		"msg": fmt.Sprintf("'%s' uploaded!", fileHeader.Filename),
-		"data": make(map[string]interface{}),
+		"code":  code,
+		"msg":   e.GetMsg(code),
+		"data":  witnesses,
+		"total": total,
 	})
 }
 
-// list all the evidences since yesterday
+// ListEvidences list all the evidences since yesterday
 func ListEvidences(c *gin.Context) {
 
 	code := e.INVALID_PARAMS
 
-	flagId := c.Param("flag_id")
-	flagID, _ := uuid.FromString(flagId)
+	flagID, err := uuid.FromString(c.Param("id"))
 
-	currentPage_ := c.DefaultQuery("current_page", "1")
-	pageSize_ := c.DefaultQuery("page_size", setting.PageSize)
-
-	currentPage, err := strconv.Atoi(currentPage_)
+	logging.Info(fmt.Sprintf("flag_id %v", flagID))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"code": code,
-			"msg": e.GetMsg(code),
+			"msg":  err.Error(),
 			"data": make(map[string]interface{}),
 		})
 		return
 	}
 
-	pageSize, err := strconv.Atoi(pageSize_)
+	var pagination schemas.Pagination
+
+	c.ShouldBindQuery(&pagination)
+
+	if pagination.CurrentPage == 0 {
+		pagination.CurrentPage = 1
+	}
+
+	if pagination.PageSize == 0 {
+		pagination.PageSize = setting.GetConfig().App.PageSize
+	}
+
+	data, total := models.FindEvidencesByFlag(flagID, pagination.CurrentPage, pagination.PageSize)
+
+	code = e.SUCCESS
+	c.JSON(http.StatusOK, gin.H{
+		"code":  code,
+		"msg":   e.GetMsg(code),
+		"data":  data,
+		"total": total,
+	})
+}
+
+// FlagDetail FlagDetail
+func FlagDetail(c *gin.Context) {
+	code := e.INVALID_PARAMS
+
+	flagID, err := uuid.FromString(c.Query("flag_id"))
+
+	logging.Info(fmt.Sprintf("flag_id %v", flagID))
+
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"code": code,
-			"msg": e.GetMsg(code),
+			"msg":  err.Error(),
 			"data": make(map[string]interface{}),
 		})
 		return
 	}
 
-	data := models.FindEvidencesByFlag(flagID, currentPage, pageSize)
+	flag := models.FindFlagByID(flagID)
 
 	code = e.SUCCESS
 	c.JSON(http.StatusOK, gin.H{
 		"code": code,
-		"msg": e.GetMsg(code),
-		"data": data,
+		"msg":  e.GetMsg(code),
+		"data": flag,
 	})
-}
-
-// https://developers.mixin.one/api/l-messages/create-attachment/
-func UploadAttachment(client *http.Client, fileHeader *multipart.FileHeader, accessToken string) (string, error) {
-
-	f, err := fileHeader.Open()
-	if err != nil {
-		return "", err
-	}
-	size := fileHeader.Size
-
-	buffer := make([]byte, size)
-	_, err = f.Read(buffer)
-
-	if err != nil {
-		return "", err
-	}
-
-
-	url := fmt.Sprintf("%s/attachments", setting.MixinAPIDomain)
-
-	req, _ := http.NewRequest("POST", url, bytes.NewBuffer(buffer))
-
-	req.Header.Add("Content-Type", http.DetectContentType(buffer))
-	req.Header.Add("Authorization", fmt.Sprintf("Bearer %s", accessToken))
-
-	resp, err := client.Do(req)
-
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	var authResp map[string]map[string]interface{}
-
-	data, _ := ioutil.ReadAll(resp.Body)
-
-	_ = json.Unmarshal(data, &authResp)
-
-	viewUrl, _ := authResp["data"]["view_url"].(string)
-
-	return viewUrl, nil
 }

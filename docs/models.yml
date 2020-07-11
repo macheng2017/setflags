@@ -21,6 +21,22 @@ paths:
       operationId: "listFlags"
       produces:
         - "application/json"
+      parameters:
+        - name: "Authorization"
+          in: "header"
+          required: true
+          type: "string"
+          default: "Bearer token"
+        - name: "current_page"
+          in: "query"
+          description: "current page number"
+          required: false
+          type: "integer"
+        - name: "page_size"
+          in: "query"
+          description: "per page size"
+          required: false
+          type: "integer"
       responses:
         "200":
           description: "successful operation"
@@ -40,6 +56,11 @@ paths:
       produces:
         - "application/json"
       parameters:
+        - name: "Authorization"
+          in: "header"
+          required: true
+          type: "string"
+          default: "Bearer token"
         - in: "body"
           name: "data"
           description: "Details of the flag"
@@ -47,6 +68,34 @@ paths:
           schema:
             $ref: "#/definitions/Flag"
       responses:
+        "405":
+          description: "Invalid input"
+  /flag/detail:
+    get:
+      summary: "Fetch a flag detail"
+      description: "Fetch flag detail"
+      operationId: "flagDetail"
+      consumes:
+        - "application/json"
+      produces:
+        - "application/json"
+      parameters:
+        - name: "Authorization"
+          in: "header"
+          required: true
+          type: "string"
+          default: "Bearer token"
+        - in: "query"
+          name: "flag_id"
+          description: "flag id"
+          required: true
+          type: "string"
+          format: "uuid"
+      responses:
+        "200":
+          description: "successful operation"
+          schema:
+            $ref: "#/definitions/Flag"
         "405":
           description: "Invalid input"
   /flags/{id}/{op}:
@@ -59,6 +108,11 @@ paths:
       produces:
         - "application/json"
       parameters:
+        - name: "Authorization"
+          in: "header"
+          required: true
+          type: "string"
+          default: "Bearer token"
         - name: "id"
           in: "path"
           description: "The flag to update"
@@ -89,12 +143,27 @@ paths:
       produces:
         - "application/json"
       parameters:
+        - name: "Authorization"
+          in: "header"
+          required: true
+          type: "string"
+          default: "Bearer token"
         - name: "x-user-id"
           in: "header"
           description: "The user's ID"
           required: true
           type: "string"
           format: "uuid"
+        - name: "current_page"
+          in: "query"
+          description: "current page number"
+          required: false
+          type: "integer"
+        - name: "page_size"
+          in: "query"
+          description: "per page size"
+          required: false
+          type: "integer"
       responses:
         "200":
           description: "successful operation"
@@ -104,7 +173,7 @@ paths:
               $ref: "#/definitions/Flag"
         "400":
           description: "Invalid status value"
-  /attachments/{attachment_id}:
+  /attachments:
     post:
       summary: "upload evidence"
       description: "upload evidence"
@@ -114,15 +183,14 @@ paths:
       produces:
         - "application/json"
       parameters:
+        - name: "Authorization"
+          in: "header"
+          required: true
+          type: "string"
+          default: "Bearer token"
         - name: "x-user-id"
           in: "header"
           description: "The user's ID"
-          required: true
-          type: "string"
-          format: "uuid"
-        - name: "attachment_id"
-          in: "path"
-          description: "Attachment ID from Messenger"
           required: true
           type: "string"
           format: "uuid"
@@ -141,26 +209,68 @@ paths:
           in: "query"
           description: ""
           type: "string"
-        - name: "created_at"
-          in: "query"
-          description: ""
-          type: "string"
-          format: "date-time"
       responses:
         "200":
           description: "successful operation"
         "400":
           description: "Invalid tag value"
-  /flags/{flag_id}/evidences:
+  /flags/{id}/witnesses:
     get:
-      description: "list all the evidences since yesterday"
+      description: "list all the witnesses"
       parameters:
-        - name: "flag_id"
+        - name: "Authorization"
+          in: "header"
+          required: true
+          type: "string"
+          default: "Bearer token"
+        - name: "id"
           in: "path"
           description: "Flag ID"
           required: true
           type: "string"
           format: "uuid"
+        - name: "current_page"
+          in: "query"
+          description: "current page number"
+          required: false
+          type: "integer"
+        - name: "page_size"
+          in: "query"
+          description: "per page size"
+          required: false
+          type: "integer"
+      responses:
+        "200":
+          description: "successful operation"
+          schema:
+            type: "array"
+            items:
+              $ref: "#/definitions/Witness"
+  /flags/{id}/evidences:
+    get:
+      description: "list all the evidences since yesterday"
+      parameters:
+        - name: "Authorization"
+          in: "header"
+          required: true
+          type: "string"
+          default: "Bearer token"
+        - name: "id"
+          in: "path"
+          description: "Flag ID"
+          required: true
+          type: "string"
+          format: "uuid"
+        - name: "current_page"
+          in: "query"
+          description: "current page number"
+          required: false
+          type: "integer"
+        - name: "page_size"
+          in: "query"
+          description: "per page size"
+          required: false
+          type: "integer"
       responses:
         "200":
           description: "successful operation"
@@ -172,6 +282,11 @@ paths:
     get:
       description: "Get the current user's information"
       parameters:
+        - name: "Authorization"
+          in: "header"
+          required: true
+          type: "string"
+          default: "Bearer token"
         - name: "x-user-id"
           in: "header"
           description: "The user's ID"
@@ -182,29 +297,32 @@ paths:
         "200":
           description: "successful operation"
           schema:
-            type: "array"
-            items:
-              $ref: "#/definitions/User"
+            $ref: "#/definitions/User"
   /auth:
-    post:
-      description: "Upload the oauth token"
+    get:
+      description: "auth callback url, mixin auth server call this uri"
       parameters:
-        - name: "token"
+        - name: "code"
           in: "query"
-          description: "the authentication token"
+          description: "authorization code"
           type: "string"
       responses:
         "200":
           description: "successful operation"
           schema:
-            type: "string"
-  /users/{user_id}/rewards/{flag_id}:
+            $ref: "#/definitions/AuthToken"
+  /users/rewards/{flag_id}:
     get:
       description: "check the total rewards received by the user for the flag"
       parameters:
-        - name: "user_id"
-          in: "path"
-          description: "Attachment ID from Messenger"
+        - name: "Authorization"
+          in: "header"
+          required: true
+          type: "string"
+          default: "Bearer token"
+        - name: "x-user-id"
+          in: "header"
+          description: "user id"
           required: true
           type: "string"
           format: "uuid"
@@ -214,6 +332,16 @@ paths:
           required: true
           type: "string"
           format: "uuid"
+        - name: "current_page"
+          in: "query"
+          description: "current page number"
+          required: false
+          type: "integer"
+        - name: "page_size"
+          in: "query"
+          description: "per page size"
+          required: false
+          type: "integer"
       responses:
         "200":
           description: "successful operation"
@@ -225,12 +353,43 @@ paths:
     get:
       description: "get the asset information"
       parameters:
+        - name: "Authorization"
+          in: "header"
+          required: true
+          type: "string"
+          default: "Bearer token"
         - name: "id"
           in: "path"
           description: "Asset ID"
           required: true
           type: "string"
           format: "uuid"
+      responses:
+        "200":
+          description: "successful operation"
+          schema:
+            type: "array"
+            items:
+              $ref: "#/definitions/Asset"
+  /assets:
+    get:
+      description: "get current user's asset information"
+      parameters:
+        - name: "Authorization"
+          in: "header"
+          required: true
+          type: "string"
+          default: "Bearer token"
+        - name: "current_page"
+          in: "query"
+          description: "current page number"
+          required: false
+          type: "integer"
+        - name: "page_size"
+          in: "query"
+          description: "per page size"
+          required: false
+          type: "integer"
       responses:
         "200":
           description: "successful operation"
@@ -257,6 +416,8 @@ definitions:
         format: "uuid"
       payer_name:
         type: "string"
+      payer_avatar_url:
+        type: "string"
       task:
         type: "string"
       days:
@@ -268,6 +429,8 @@ definitions:
       asset_id:
         type: "string"
         format: "uuid"
+      symbol:
+        type: "string"
       amount:
         type: "number"
       times_achieved:
@@ -280,6 +443,17 @@ definitions:
           - "unverified"
           - "verified"
           - "closed"
+      verified:
+        type: "integer"
+        enum:
+          - 0
+          - -1
+          - 1
+          - 2
+      remaining_days:
+        type: "integer"
+      remaining_amount:
+        type: "number"
   Evidence:
     type: "object"
     properties:
@@ -304,9 +478,11 @@ definitions:
   User:
     type: "object"
     properties:
-      id:
+      user_id:
         type: "string"
         format: "uuid"
+      identity_number:
+        type: "string"
       full_name:
         type: "string"
       avatar_url:
@@ -320,6 +496,26 @@ definitions:
       payee_id:
         type: "string"
         format: "uuid"
+      payee_name:
+        type: "string"
+      payee_avatar_url:
+        type: "string"
+        format: "url"
+      amount:
+        type: "number"
+        format: "float"
+      symbol:
+        type: "string"
+      verified:
+        type: "integer"
+        enum:
+          - 0
+          - -1
+          - 1
+          - 2
+      witnessed_time:
+        type: "string"
+        format: "date-time"
   Payer:
     type: "object"
     properties:
@@ -333,7 +529,7 @@ definitions:
   Asset:
     type: "object"
     properties:
-      id:
+      asset_id:
         type: "string"
         format: "uuid"
       symbol:
@@ -342,9 +538,13 @@ definitions:
         type: "number"
       price_usd:
         type: "number"
-      paid_at:
+  AuthToken:
+    type: "object"
+    properties:
+      token:
         type: "string"
-        format: "date-time"
+      user_id:
+        type: "string"
 externalDocs:
   description: "Find out more about Set Flags"
   url: "http://group-mixin.droneidentity.eu"

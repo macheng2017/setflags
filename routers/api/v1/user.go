@@ -1,89 +1,143 @@
 package v1
 
 import (
-	"bytes"
-	"encoding/json"
-	"fmt"
-	"github.com/gin-gonic/gin"
-	"github.com/gofrs/uuid"
-	"io/ioutil"
+	"context"
 	"net/http"
 	"set-flags/models"
 	"set-flags/pkg/e"
+	"set-flags/pkg/logging"
 	"set-flags/pkg/setting"
 	"set-flags/pkg/utils"
-	"strconv"
+	"set-flags/schemas"
+
+	"github.com/fox-one/mixin-sdk"
+	"github.com/gin-gonic/gin"
+	"github.com/gofrs/uuid"
 )
 
-// check the total rewards received by the user for the flag
+// CheckRewards check the total rewards received by the user for the flag
 func CheckRewards(c *gin.Context) {
 	code := e.INVALID_PARAMS
 
-	userId := c.Param("user_id")
-	fmt.Println(fmt.Sprintf("userId: %s", userId))
-	flagId := c.Param("flag_id")
-	fmt.Println(fmt.Sprintf("flagId: %s", flagId))
-	userID, err := uuid.FromString(userId)
-	if err != nil {
+	var pagination schemas.Pagination
+
+	c.ShouldBindQuery(&pagination)
+
+	if pagination.CurrentPage == 0 {
+		pagination.CurrentPage = 1
+	}
+
+	if pagination.PageSize == 0 {
+		pagination.PageSize = setting.GetConfig().App.PageSize
+	}
+
+	var checkReward schemas.CheckReward
+
+	if err := c.BindUri(&checkReward); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
-			"code": code,
+			"code": 400,
 			"msg":  err.Error(),
 			"data": make(map[string]interface{}),
 		})
 		return
 	}
-	flagID, err := uuid.FromString(flagId)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"code": code,
-			"msg":  err.Error(),
-			"data": make(map[string]interface{}),
-		})
-		return
-	}
 
-	currentPage_ := c.DefaultQuery("current_page", "1")
-	pageSize_ := c.DefaultQuery("page_size", setting.PageSize)
+	userID, _ := uuid.FromString(checkReward.UserID)
 
-	currentPage, err := strconv.Atoi(currentPage_)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"code": code,
-			"msg": e.GetMsg(code),
-			"data": make(map[string]interface{}),
-		})
-		return
-	}
+	flagID, _ := uuid.FromString(checkReward.FlagID)
 
-	pageSize, err := strconv.Atoi(pageSize_)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"code": code,
-			"msg": e.GetMsg(code),
-			"data": make(map[string]interface{}),
-		})
-		return
-	}
-
-	data := models.FindEvidenceByFlagIdAndAttachmentId(flagID, userID, currentPage, pageSize)
+	data, total := models.FindEvidenceByFlagIDAndAttachmentID(flagID, userID, pagination.CurrentPage, pagination.PageSize)
 
 	code = e.SUCCESS
 	c.JSON(http.StatusOK, gin.H{
-		"code": code,
-		"msg":  e.GetMsg(code),
-		"data": data,
+		"code":  code,
+		"msg":   e.GetMsg(code),
+		"data":  data,
+		"total": total,
 	})
 }
 
+// Me current user profile
 func Me(c *gin.Context) {
 	code := e.INVALID_PARAMS
-	userId := c.GetHeader("x-user-id")
 
-	_, err := uuid.FromString(userId)
+	var header schemas.Header
+
+	if err := c.BindHeader(&header); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code": 400,
+			"msg":  err.Error(),
+			"data": make(map[string]interface{}),
+		})
+		return
+	}
+	userID, _ := uuid.FromString(header.XUSERID)
+
+	if !models.UserExist(userID) {
+		code = http.StatusForbidden
+		c.JSON(code, gin.H{
+			"code": code,
+			"msg":  "current user not exist.",
+			"data": make(map[string]interface{}),
+		})
+		return
+	}
+
+	accessToken := models.FindUserAccessToken(userID)
+
+	ctx := context.Background()
+	profile, err := mixin.FetchProfile(ctx, accessToken)
 
 	if err != nil {
-		fmt.Println(err)
-		c.JSON(http.StatusBadRequest, gin.H{
+
+		code = e.ERROR_AUTH_TOKEN
+
+		logging.Info("fetch user profile failed", err.Error())
+
+		c.JSON(http.StatusForbidden, gin.H{
+			"code": http.StatusForbidden,
+			"msg":  err.Error(),
+			"data": make(map[string]interface{}),
+		})
+		return
+	}
+
+	userSchema := models.UserSchema{
+		UserID:         profile.UserID,
+		IdentityNumber: profile.IdentityNumber,
+		FullName:       profile.FullName,
+		AvatarURL:      profile.AvatarURL,
+	}
+
+	code = e.SUCCESS
+	c.JSON(http.StatusOK, gin.H{
+		"code": code,
+		"msg":  e.GetMsg(code),
+		"data": userSchema,
+	})
+}
+
+// Auth auth
+func Auth(c *gin.Context) {
+	code := e.INVALID_PARAMS
+
+	authorizationCode := c.Query("code")
+	logging.Info("authorizationCode", authorizationCode)
+
+	ctx := context.Background()
+
+	accessToken, _, err := mixin.AuthorizeToken(ctx,
+		setting.GetConfig().Bot.ClientID.String(),
+		setting.GetConfig().Bot.ClientSecret,
+		authorizationCode,
+		setting.GetConfig().Bot.CodeVerifier)
+
+	if err != nil {
+		code = e.ERROR_AUTH_TOKEN
+
+		logging.Info("fetch access token failed", err.Error())
+
+		c.JSON(http.StatusInternalServerError, gin.H{
 			"code": code,
 			"msg":  err.Error(),
 			"data": make(map[string]interface{}),
@@ -91,125 +145,56 @@ func Me(c *gin.Context) {
 		return
 	}
 
-	user := models.FindUserById(userId)
-
-	data := map[string]string{
-		"id":         userId,
-		"full_name":  user.FullName,
-		"avatar_url": user.AvatarUrl,
-	}
-
-	code = e.SUCCESS
-	c.JSON(http.StatusOK, gin.H{
-		"code": code,
-		"msg":  e.GetMsg(code),
-		"data": data,
-	})
-}
-
-func Auth(c *gin.Context) {
-
-	authorizationCode := ""
-
-	client := &http.Client{}
-
-	code := e.INVALID_PARAMS
-
-	accessToken, err := FetchAccessToken(client, authorizationCode)
+	profile, err := mixin.FetchProfile(ctx, accessToken)
 
 	if err != nil {
+
 		code = e.ERROR_AUTH_TOKEN
+
+		logging.Info("fetch user profile failed", err.Error())
+
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"code": code,
-			"msg":  e.GetMsg(code),
+			"msg":  err.Error(),
 			"data": make(map[string]interface{}),
 		})
 		return
 	}
 
-	userInfo, err := FetchUserInfo(client, accessToken)
-
-	if err != nil {
-		code = e.ERROR_AUTH_TOKEN
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"code": code,
-			"msg":  e.GetMsg(code),
-			"data": make(map[string]interface{}),
-		})
-		return
-	}
+	userID, _ := uuid.FromString(profile.UserID)
 
 	// update user info and access token
-	if models.UserExist(userInfo.UserId) {
-		models.UpdateUser(&userInfo, accessToken)
+	if models.UserExist(userID) {
+		logging.Info("update user")
+		models.UpdateUser(profile, accessToken)
+		models.UpdateFlagUserInfo(profile)
 	} else {
 		// create user
-		models.CreateUser(&userInfo, accessToken)
+		logging.Info("create user")
+		models.CreateUser(profile, accessToken)
+	}
+	// mixin auth success
+	// generate app Bearer token
+	token, err := utils.GenerateToken(profile.UserID)
+	if err != nil {
+		code = e.ERROR_AUTH_TOKEN
+		c.JSON(http.StatusOK, gin.H{
+			"code": code,
+			"msg":  e.GetMsg(code),
+			"data": make(map[string]interface{}),
+		})
+		return
+	}
+
+	authToken := schemas.AuthToken{
+		Token:  token,
+		UserID: profile.UserID,
 	}
 
 	code = e.SUCCESS
 	c.JSON(http.StatusOK, gin.H{
 		"code": code,
 		"msg":  e.GetMsg(code),
-		"data": make(map[string]interface{}),
+		"data": authToken,
 	})
-}
-
-// Fetch user access_token from Mixin
-func FetchAccessToken(client *http.Client, code string) (string, error) {
-	body := map[string]interface{}{}
-
-	body["client_id"] = setting.ClientId.String()
-	body["code"] = code
-
-	bt, _ := json.Marshal(body)
-
-	url := fmt.Sprintf("%s/oauth/token", setting.MixinAPIDomain)
-
-	req, _ := http.NewRequest("POST", url, bytes.NewBuffer(bt))
-
-	req.Header.Add("Content-Type", "application/json")
-
-	resp, err := client.Do(req)
-
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	var authResp map[string]interface{}
-
-	data, _ := ioutil.ReadAll(resp.Body)
-
-	_ = json.Unmarshal(data, &authResp)
-
-	token, _ := authResp["access_token"].(string)
-
-	return token, nil
-}
-
-// Fetch user info from Mixin
-func FetchUserInfo(client *http.Client, accessToken string) (utils.UserInfo, error) {
-	url := fmt.Sprintf("%s/me", setting.MixinAPIDomain)
-
-	req, _ := http.NewRequest("GET", url, nil)
-
-	req.Header.Add("Authorization", fmt.Sprintf("Bearer %s", accessToken))
-
-	resp, err := client.Do(req)
-
-	if err != nil {
-		return utils.UserInfo{}, err
-	}
-	defer resp.Body.Close()
-
-	var authResp map[string]utils.UserInfo
-
-	data, _ := ioutil.ReadAll(resp.Body)
-
-	_ = json.Unmarshal(data, &authResp)
-
-	user, _ := authResp["data"]
-
-	return user, nil
 }

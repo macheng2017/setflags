@@ -2,12 +2,15 @@ package models
 
 import (
 	"fmt"
-	"github.com/gofrs/uuid"
-	"github.com/jinzhu/gorm"
-	_ "github.com/jinzhu/gorm/dialects/postgres"
 	"log"
 	"set-flags/pkg/setting"
 	"time"
+
+	"github.com/gofrs/uuid"
+	"github.com/jinzhu/gorm"
+
+	// postgres dirver
+	_ "github.com/jinzhu/gorm/dialects/postgres"
 )
 
 var db *gorm.DB
@@ -20,24 +23,22 @@ type Base struct {
 	DeletedAt *time.Time `sql:"index" json:"deleted_at"`
 }
 
+// InitDB init db
 func InitDB() {
 	var (
-		err                                        error
-		dbType, dbName, user, password, host, port string
+		err                                  error
+		dbType, dbName, user, password, host string
+		port                                 int
 	)
 
-	sec, err := setting.Cfg.GetSection("database")
-	if err != nil {
-		log.Fatal(2, "Fail to get section 'database': %v", err)
-	}
-	dbType = sec.Key("TYPE").String()
-	dbName = sec.Key("NAME").String()
-	user = sec.Key("USER").String()
-	password = sec.Key("PASSWORD").String()
-	host = sec.Key("HOST").String()
-	port = sec.Key("PORT").String()
+	dbType = setting.GetConfig().DataBase.Type
+	dbName = setting.GetConfig().DataBase.Name
+	user = setting.GetConfig().DataBase.User
+	password = setting.GetConfig().DataBase.Password
+	host = setting.GetConfig().DataBase.Host
+	port = setting.GetConfig().DataBase.Port
 
-	db, err = gorm.Open(dbType, fmt.Sprintf("host=%s port=%s user=%s dbname=%s sslmode=disable password=%s",
+	db, err = gorm.Open(dbType, fmt.Sprintf("host=%s port=%d user=%s dbname=%s sslmode=disable password=%s",
 		host,
 		port,
 		user,
@@ -54,9 +55,10 @@ func InitDB() {
 	db.DB().SetMaxOpenConns(100)
 
 	// Migrate the schema
-	db.AutoMigrate(&Flag{}, &Asset{}, &Evidence{}, &User{})
+	db.AutoMigrate(&Flag{}, &Asset{}, &Evidence{}, &User{}, &Witness{}, &Payment{})
 }
 
+// CloseDB close db connection
 func CloseDB() {
 	defer db.Close()
 }

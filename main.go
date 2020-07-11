@@ -8,19 +8,23 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
-	number "github.com/MixinNetwork/go-number"
-	sdk "github.com/fox-one/mixin-sdk"
-	uuid "github.com/gofrs/uuid"
-	cron "github.com/robfig/cron/v3"
 	"io"
 	"log"
 	"math"
-	"net/http"
 	"set-flags/models"
+	"set-flags/pkg/logging"
 	"set-flags/pkg/setting"
 	"set-flags/routers"
 	"strings"
+	"syscall"
 	"time"
+
+	number "github.com/MixinNetwork/go-number"
+	"github.com/fox-one/mixin-sdk"
+	sdk "github.com/fox-one/mixin-sdk"
+	"github.com/fvbock/endless"
+	uuid "github.com/gofrs/uuid"
+	cron "github.com/robfig/cron/v3"
 )
 
 func newWithSeconds() *cron.Cron {
@@ -52,7 +56,7 @@ func UniqueConversationId(userId, recipientId uuid.UUID) uuid.UUID {
 }
 
 func paySFCPrize(ctx context.Context, bot *sdk.User, userID uuid.UUID, flag *models.Flag) error {
-	asset := models.FindAsset(flag.AssetId)
+	asset := models.FindAsset(flag.AssetID)
 	price := asset.PriceUSD
 	if asset.Symbol == "SFC" {
 		price = 1
@@ -62,19 +66,19 @@ func paySFCPrize(ctx context.Context, bot *sdk.User, userID uuid.UUID, flag *mod
 		AssetID:    "f80b5f5f-8e4d-3072-b618-bd6c0d8ccaa5", // SFC
 		OpponentID: userID.String(),
 		Amount:     number.FromFloat(flag.Amount).Mul(number.FromFloat(price)).Div(number.FromString("10")).Persist(),
-		Memo:       setting.Name,
-	}, setting.SessionAssetPIN)
+		Memo:       setting.GetConfig().App.Name,
+	}, setting.GetConfig().Bot.Pin)
 	return err
 }
 
 func payFee(ctx context.Context, bot *sdk.User, userID uuid.UUID, flag *models.Flag, amount number.Decimal) error {
 	_, err := bot.Transfer(ctx, &sdk.TransferInput{
 		TraceID:    uuid.Must(uuid.NewV4()).String(),
-		AssetID:    flag.AssetId.String(),
+		AssetID:    flag.AssetID.String(),
 		OpponentID: userID.String(),
 		Amount:     amount.Persist(),
-		Memo:       setting.Name,
-	}, setting.SessionAssetPIN)
+		Memo:       setting.GetConfig().App.Name,
+	}, setting.GetConfig().Bot.Pin)
 	return err
 }
 
@@ -94,7 +98,7 @@ func countVotes(flag *models.Flag) (int, int, int) {
 	yesVotes = 0
 	noVotes = 0
 	for _, p := range flag.Witnesses() {
-		if p.PayeeId == flag.PayerId {
+		if p.PayeeID == flag.PayerID {
 			continue
 		}
 		if p.Verified == 1 {
@@ -110,9 +114,9 @@ func countVotes(flag *models.Flag) (int, int, int) {
 func payWitnesses(ctx context.Context, bot *sdk.User, flag *models.Flag, nCorrect, yesVotes, noVotes, remainingDays int) {
 	amount := number.FromFloat(flag.Amount).Div(number.FromFloat(float64(10) * float64(flag.Days) * float64(nCorrect)))
 	for _, p := range flag.Witnesses() {
-		if p.PayeeId != flag.PayerId {
+		if p.PayeeID != flag.PayerID {
 			if yesVotes >= noVotes && p.Verified == 1 || yesVotes <= noVotes && p.Verified == -1 {
-				payFee(ctx, bot, p.PayeeId, flag, amount)
+				payFee(ctx, bot, p.PayeeID, flag, amount)
 			}
 			p.Verified = 0
 		}
@@ -126,8 +130,8 @@ func payWitnessesUnconditionally(ctx context.Context, bot *sdk.User, flag *model
 	}
 	amount = number.FromString(amount.Div(number.FromFloat(float64(flag.Days) * float64(10) * float64(nWitnesses))).PresentFloor())
 	for _, p := range flag.Witnesses() {
-		if p.PayeeId != flag.PayerId {
-			payFee(ctx, bot, p.PayeeId, flag, amount)
+		if p.PayeeID != flag.PayerID {
+			payFee(ctx, bot, p.PayeeID, flag, amount)
 		}
 	}
 	flag.Status = "PAID"
@@ -136,9 +140,9 @@ func payWitnessesUnconditionally(ctx context.Context, bot *sdk.User, flag *model
 
 func rewardPayer(ctx context.Context, bot *sdk.User, flag *models.Flag, nCorrect, yesVotes, noVotes, remainingDays int, task string) {
 	if yesVotes > noVotes && 0 <= int64(nCorrect) {
-		payFee(ctx, bot, flag.PayerId, flag, number.FromFloat(flag.Amount).Div(number.FromFloat(float64(flag.Days))).Mul(number.FromString("0.9")))
+		payFee(ctx, bot, flag.PayerID, flag, number.FromFloat(flag.Amount).Div(number.FromFloat(float64(flag.Days))).Mul(number.FromString("0.9")))
 		if flag.RemainingDays == flag.Days {
-			paySFCPrize(ctx, bot, flag.PayerId, flag)
+			paySFCPrize(ctx, bot, flag.PayerID, flag)
 		}
 		flag.TimesAchieved = flag.TimesAchieved + 1
 	}
@@ -154,21 +158,21 @@ func sendTextMessage(ctx context.Context, bot *sdk.User, conversationId uuid.UUI
 		Data:           base64.StdEncoding.EncodeToString([]byte(message)),
 	})
 	if err != nil {
-		log.Panicln(err)
+		log.Println(err)
 	}
 	return err
 }
 
 func sendUserAppCard(ctx context.Context, bot *sdk.User, userId uuid.UUID, flag *models.Flag) error {
-	payer := models.FindUser(flag.PayerId)
+	payer := models.FindUserByID(flag.PayerID)
 	card, _ := json.Marshal(map[string]string{
-		"app_id":      setting.ClientId.String(),
+		"app_id":      setting.GetConfig().Bot.ClientID.String(),
 		"icon_url":    "https://images.mixin.one/X44V48LK9oEBT3izRGKqdVSPfiH5DtYTzzF0ch5nP-f7tO4v0BTTqVhFEHqd52qUeuVas-BSkLH1ckxEI51-jXmF=s256",
 		"title":       "励志定投群红包",
 		"description": fmt.Sprintf("来自@%s 的红包", payer.IdentityNumber),
 		"action":      "https://group-redirect.droneidentity.eu" + "/flags/" + flag.ID.String(),
 	})
-	cID := UniqueConversationId(setting.ClientId, userId)
+	cID := UniqueConversationId(setting.GetConfig().Bot.ClientID, userId)
 	err := bot.SendMessage(ctx, &sdk.MessageRequest{
 		ConversationID: cID.String(),
 		MessageID:      uuid.Must(uuid.NewV4()).String(),
@@ -176,48 +180,98 @@ func sendUserAppCard(ctx context.Context, bot *sdk.User, userId uuid.UUID, flag 
 		Data:           base64.StdEncoding.EncodeToString(card),
 	})
 	if err != nil {
-		log.Panicln(err)
+		log.Println(err)
 	}
 	return nil
 }
 
 func remindWitnesses(ctx context.Context, bot *sdk.User, flag *models.Flag, remainingDays int, task string) {
 	for _, p := range flag.Witnesses() {
-		if p.Verified == 0 && p.PayeeId != flag.PayerId {
+		if p.Verified == 0 && p.PayeeID != flag.PayerID {
 			appMsg := "请您验证:@%d第%d天完成%s了吗？"
-			cID := UniqueConversationId(setting.ClientId, p.PayeeId)
-			payer := models.FindUser(flag.PayerId)
+			cID := UniqueConversationId(setting.GetConfig().Bot.ClientID, p.PayeeID)
+			payer := models.FindUserByID(flag.PayerID)
 			sendTextMessage(ctx, bot, cID, fmt.Sprintf(appMsg, payer.IdentityNumber, int(flag.Days)-remainingDays+1, task))
-			sendUserAppCard(ctx, bot, p.PayeeId, flag)
+			sendUserAppCard(ctx, bot, p.PayeeID, flag)
 		}
 	}
 }
 
 func encouragePayer(ctx context.Context, bot *sdk.User, flag *models.Flag, remainingDays int, task string) {
 	payMsg := "谢谢@%d, 收到你第%d天的红包，希望你能够坚持每天完成'%s'，记得分享证据。确定你做到了！"
-	cID := UniqueConversationId(setting.ClientId, flag.PayerId)
-	payer := models.FindUser(flag.PayerId)
+	cID := UniqueConversationId(setting.GetConfig().Bot.ClientID, flag.PayerID)
+	payer := models.FindUserByID(flag.PayerID)
 	sendTextMessage(ctx, bot, cID, fmt.Sprintf(payMsg, payer.IdentityNumber, int(flag.Days)-remainingDays+1, task))
-	sendUserAppCard(ctx, bot, flag.PayerId, flag)
+	sendUserAppCard(ctx, bot, flag.PayerID, flag)
 }
 
 func remindPayerForEvidence(ctx context.Context, bot *sdk.User, flag *models.Flag, task string) {
 	done := false
 	for _, p := range flag.Witnesses() {
-		if p.PayeeId == flag.PayerId {
+		if p.PayeeID == flag.PayerID {
 			done = (p.Verified == 2)
 			break
 		}
 	}
 	if !done {
-		cID := UniqueConversationId(setting.ClientId, flag.PayerId)
+		cID := UniqueConversationId(setting.GetConfig().Bot.ClientID, flag.PayerID)
 		payMsg := "今天@%s, 你完成'%s'了吗？请先上传证据，然后点击确认"
-		payer := models.FindUser(flag.PayerId)
+		payer := models.FindUserByID(flag.PayerID)
 		sendTextMessage(ctx, bot, cID, fmt.Sprintf(payMsg, payer.IdentityNumber, task))
-		sendUserAppCard(ctx, bot, flag.PayerId, flag)
+		sendUserAppCard(ctx, bot, flag.PayerID, flag)
 	}
 }
 
+func upsertAsset(ctx context.Context, bot *sdk.User) {
+	assets, _ := bot.ReadAssets(ctx)
+
+	for _, asset := range assets {
+		models.UpsertAsset(asset)
+	}
+}
+
+type (
+	verifyPaymentInput struct {
+		AssetID    string `json:"asset_id,omitempty"`
+		OpponentID string `json:"opponent_id,omitempty"`
+		Amount     string `json:"amount,omitempty"`
+		TraceID    string `json:"trace_id,omitempty"`
+	}
+
+	verifyPaymentResponse struct {
+		Recipient *mixin.Profile `json:"recipient,omitempty"`
+		Asset     *mixin.Asset   `json:"asset,omitempty"`
+		Amount    string         `json:"amount,omitempty"`
+		Status    string         `json:"status,omitempty"`
+	}
+)
+
+func checkPayment(ctx context.Context, bot *sdk.User) {
+	payments := models.ListNoPaidPayment()
+
+	for _, payment := range payments {
+		verifyInput := &sdk.VerifyPaymentInput{
+			AssetID:    payment.AssetID,
+			OpponentID: payment.OpponentID,
+			Amount:     payment.Amount,
+			TraceID:    payment.TraceID.String(),
+		}
+		resp, err := bot.VerifyPayment(ctx, verifyInput)
+		logging.Info(fmt.Sprintf("verified payment status: %v", resp.Status))
+		logging.Info(fmt.Sprintf("verified payment status: %v", resp))
+		if err != nil {
+			logging.Error(fmt.Sprintf("verified payment err: %v", err))
+			continue
+		}
+
+		if resp.Status == "paid" {
+			models.UpdatePaymentStatus(payment.TraceID, resp.Status)
+			models.UpdateFlagStatus(payment.FlagID, resp.Status)
+		}
+	}
+}
+
+// Reminder Reminder
 func Reminder(ctx context.Context, bot *sdk.User, newDay bool) {
 	flags := models.ListActiveFlags(true)
 	for _, flag := range flags {
@@ -229,7 +283,7 @@ func Reminder(ctx context.Context, bot *sdk.User, newDay bool) {
 		}
 		isVerified := false
 		for _, pp := range flag.Witnesses() {
-			if pp.Verified == 2 && pp.PayeeId == flag.PayerId {
+			if pp.Verified == 2 && pp.PayeeID == flag.PayerID {
 				isVerified = true
 				break
 			}
@@ -255,30 +309,40 @@ func Reminder(ctx context.Context, bot *sdk.User, newDay bool) {
 }
 
 func addTimers(ctx context.Context, cron *cron.Cron, bot *sdk.User) {
+	/*
+		cron.AddFunc("0 * * * * ?", func() {
+			log.Println("Sceduled every minute to test")
+			Reminder(ctx, bot, false)
+		})
+	*/
+	// cron.AddFunc("0 0 8 * * ?", func() {
+	// 	Reminder(ctx, bot, false)
+	// })
+	// cron.AddFunc("0 0 20 * * ?", func() {
+	// 	Reminder(ctx, bot, false)
+	// })
+	// cron.AddFunc("0 0 23 * * ?", func() {
+	// 	Reminder(ctx, bot, true)
+	// })
+
+	// cron.AddFunc("0 * * * * ?", func() {
+	// 	upsertAsset(ctx, bot)
+	// })
+
 	cron.AddFunc("0 * * * * ?", func() {
-		log.Println("Sceduled every minute to test")
-		Reminder(ctx, bot, false)
-	})
-	cron.AddFunc("0 0 8 * * ?", func() {
-		Reminder(ctx, bot, false)
-	})
-	cron.AddFunc("0 0 20 * * ?", func() {
-		Reminder(ctx, bot, false)
-	})
-	cron.AddFunc("0 0 23 * * ?", func() {
-		Reminder(ctx, bot, true)
+		checkPayment(ctx, bot)
 	})
 }
 
 func main() {
-
+	logging.Setup()
 	models.InitDB()
 	bot := &sdk.User{
-		UserID:    setting.ClientSecret,
-		SessionID: setting.SessionID,
-		PINToken:  setting.PINToken,
+		UserID:    setting.GetConfig().Bot.ClientID.String(),
+		SessionID: setting.GetConfig().Bot.SessionID,
+		PINToken:  setting.GetConfig().Bot.PinToken,
 	}
-	block, _ := pem.Decode([]byte(setting.SessionKey))
+	block, _ := pem.Decode([]byte(setting.GetConfig().Bot.PrivateKey))
 	if block != nil {
 		privateKey, _ := x509.ParsePKCS1PrivateKey(block.Bytes)
 		bot.SetPrivateKey(privateKey)
@@ -290,13 +354,20 @@ func main() {
 	ctx := context.Background()
 	addTimers(ctx, cron, bot)
 
-	s := &http.Server{
-		Addr:           fmt.Sprintf(":%d", setting.HTTPPort),
-		Handler:        routers.InitRouter(),
-		ReadTimeout:    setting.ReadTimeout,
-		WriteTimeout:   setting.WriteTimeout,
-		MaxHeaderBytes: 1 << 20,
+	endless.DefaultReadTimeOut = time.Duration(setting.GetConfig().App.ReadTimeOut) * time.Second
+	endless.DefaultWriteTimeOut = time.Duration(setting.GetConfig().App.WriteTimeOut) * time.Second
+	endless.DefaultMaxHeaderBytes = 1 << 20
+	endPoint := fmt.Sprintf(":%d", setting.GetConfig().App.HTTPPort)
+
+	server := endless.NewServer(endPoint, routers.InitRouter())
+	server.BeforeBegin = func(add string) {
+		logging.Info(fmt.Sprintf("Actual pid is %d", syscall.Getpid()))
+		log.Printf("Actual pid is %d", syscall.Getpid())
 	}
 
-	s.ListenAndServe()
+	err := server.ListenAndServe()
+	if err != nil {
+		logging.Error(fmt.Sprintf("Server err: %v", err))
+		log.Printf("Server err: %v", err)
+	}
 }
