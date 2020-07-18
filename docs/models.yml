@@ -472,6 +472,12 @@ definitions:
       times_achieved:
         type: "integer"
         format: "int32"
+      period:
+        type: "integer"
+        format: "int32"
+      days_per_period:
+        type: "integer"
+        format: "int32"
       status:
         type: "string"
         enum:
@@ -479,6 +485,8 @@ definitions:
           - "paid"
           # payment not complete
           - "pending"
+          # flag life end
+          - "closed"
       period_status:
         type: "string"
         enum:
@@ -486,8 +494,6 @@ definitions:
           - "done"
           # not yet upload evidence
           - "undone"
-          # flag life end
-          - "closed"
       verified:
         type: "string"
         enum:
@@ -510,6 +516,9 @@ definitions:
       flag_id:
         type: "string"
         format: "uuid"
+      period:
+        type: "integer"
+        format: "int32"
       type:
         type: "string"
         enum:
@@ -560,6 +569,9 @@ definitions:
           - "yes"
           # payee flag not complete
           - "no"
+      period:
+        type: "integer"
+        format: "int32"
       witnessed_time:
         type: "string"
         format: "date-time"
