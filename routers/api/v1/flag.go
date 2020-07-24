@@ -101,6 +101,52 @@ func CreateFlag(c *gin.Context) {
 		return
 	}
 
+	if flag.MaxWitness <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code": code,
+			"msg":  fmt.Sprintf("max witness must greater than zero."),
+			"data": make(map[string]interface{}),
+		})
+		return
+	}
+
+	if flag.Amount <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code": code,
+			"msg":  fmt.Sprintf("amount must greater than zero."),
+			"data": make(map[string]interface{}),
+		})
+		return
+	}
+
+	if flag.DaysPerPeriod <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code": code,
+			"msg":  fmt.Sprintf("days per period must greater than zero."),
+			"data": make(map[string]interface{}),
+		})
+		return
+	}
+
+	if flag.TotalPeriod <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code": code,
+			"msg":  fmt.Sprintf("total period must greater than zero."),
+			"data": make(map[string]interface{}),
+		})
+		return
+	}
+
+	// check asset id
+	if !models.ExistAsset(flag.AssetID) {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code": code,
+			"msg":  fmt.Sprintf("asset not exist, asset_id: %s, symbol: %s", flag.AssetID, flag.Symbol),
+			"data": make(map[string]interface{}),
+		})
+		return
+	}
+
 	// find user
 	user := models.FindUserByID(userID)
 	flag.PayerID = userID
@@ -184,8 +230,17 @@ func UpdateFlag(c *gin.Context) {
 		code = e.SUCCESS
 		models.UpdateFlagPeriodStatus(flagID, op)
 	} else if flag.PayerID != userID && (op == "yes" || op == "no") {
+		err := models.UpsertWitness(flagID, userID, flag.AssetID, op, flag.Symbol, flag.Period, flag.MaxWitness)
+		if err != nil {
+			code = e.ERROR
+			c.JSON(http.StatusOK, gin.H{
+				"code": code,
+				"msg":  err.Error(),
+				"data": make(map[string]interface{}),
+			})
+			return
+		}
 		code = e.SUCCESS
-		models.UpsertWitness(flagID, userID, op, flag.Period)
 	}
 
 	if code != e.SUCCESS {
@@ -242,195 +297,6 @@ func FindFlagsByUserID(c *gin.Context) {
 	})
 }
 
-// GetWitnesses list all witnesses of the flag
-func GetWitnesses(c *gin.Context) {
-	code := e.INVALID_PARAMS
-
-	var pagination schemas.Pagination
-
-	c.ShouldBindQuery(&pagination)
-
-	if pagination.CurrentPage == 0 {
-		pagination.CurrentPage = 1
-	}
-
-	if pagination.PageSize == 0 {
-		pagination.PageSize = setting.GetConfig().App.PageSize
-	}
-
-	flagID, err := uuid.FromString(c.Param("id"))
-
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"code": code,
-			"msg":  err.Error(),
-			"data": make(map[string]interface{}),
-		})
-		return
-	}
-
-	if !models.FlagExists(flagID) {
-		c.JSON(http.StatusNotFound, gin.H{
-			"code": 404,
-			"msg":  "Flag not found.",
-			"data": make(map[string]interface{}),
-		})
-		return
-	}
-
-	flag := models.FindFlagByID(flagID)
-
-	witnesses, total := models.GetWitnessSchema(flagID, pagination.PageSize, pagination.CurrentPage, flag.Period)
-
-	code = e.SUCCESS
-	c.JSON(http.StatusOK, gin.H{
-		"code":  code,
-		"msg":   e.GetMsg(code),
-		"data":  witnesses,
-		"total": total,
-	})
-}
-
-// GetWitnessesByPeriod GetWitnessesByPeriod
-func GetWitnessesByPeriod(c *gin.Context) {
-	code := e.INVALID_PARAMS
-
-	var pagination schemas.Pagination
-
-	c.ShouldBindQuery(&pagination)
-
-	if pagination.CurrentPage == 0 {
-		pagination.CurrentPage = 1
-	}
-
-	if pagination.PageSize == 0 {
-		pagination.PageSize = setting.GetConfig().App.PageSize
-	}
-
-	flagID, err := uuid.FromString(c.Param("id"))
-
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"code": code,
-			"msg":  err.Error(),
-			"data": make(map[string]interface{}),
-		})
-		return
-	}
-
-	if !models.FlagExists(flagID) {
-		c.JSON(http.StatusNotFound, gin.H{
-			"code": 404,
-			"msg":  "Flag not found.",
-			"data": make(map[string]interface{}),
-		})
-		return
-	}
-
-	flag := models.FindFlagByID(flagID)
-
-	witnesses, total := models.GetWitnessSchema(flagID, pagination.PageSize, pagination.CurrentPage, flag.Period)
-
-	code = e.SUCCESS
-	c.JSON(http.StatusOK, gin.H{
-		"code":  code,
-		"msg":   e.GetMsg(code),
-		"data":  witnesses,
-		"total": total,
-	})
-}
-
-// ListEvidences list all the evidences since yesterday
-func ListEvidences(c *gin.Context) {
-
-	code := e.INVALID_PARAMS
-
-	var pagination schemas.Pagination
-
-	c.ShouldBindQuery(&pagination)
-
-	if pagination.CurrentPage == 0 {
-		pagination.CurrentPage = 1
-	}
-
-	if pagination.PageSize == 0 {
-		pagination.PageSize = setting.GetConfig().App.PageSize
-	}
-
-	flagID, err := uuid.FromString(c.Param("id"))
-
-	logging.Info(fmt.Sprintf("flag_id %v", flagID))
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"code": code,
-			"msg":  err.Error(),
-			"data": make(map[string]interface{}),
-		})
-		return
-	}
-
-	data, total := models.FindEvidencesByFlag(flagID, pagination.CurrentPage, pagination.PageSize)
-
-	code = e.SUCCESS
-	c.JSON(http.StatusOK, gin.H{
-		"code":  code,
-		"msg":   e.GetMsg(code),
-		"data":  data,
-		"total": total,
-	})
-}
-
-// ListEvidencesWithPeriod list the evidences with period
-func ListEvidencesWithPeriod(c *gin.Context) {
-
-	code := e.INVALID_PARAMS
-
-	var pagination schemas.Pagination
-
-	c.ShouldBindQuery(&pagination)
-
-	if pagination.CurrentPage == 0 {
-		pagination.CurrentPage = 1
-	}
-
-	if pagination.PageSize == 0 {
-		pagination.PageSize = setting.GetConfig().App.PageSize
-	}
-
-	flagID, err := uuid.FromString(c.Param("id"))
-
-	logging.Info(fmt.Sprintf("flag_id %v", flagID))
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"code": code,
-			"msg":  err.Error(),
-			"data": make(map[string]interface{}),
-		})
-		return
-	}
-
-	if !models.FlagExists(flagID) {
-		c.JSON(http.StatusNotFound, gin.H{
-			"code": 404,
-			"msg":  "Flag not found.",
-			"data": make(map[string]interface{}),
-		})
-		return
-	}
-
-	flag := models.FindFlagByID(flagID)
-
-	data, total := models.FindEvidencesByFlagAndPeriod(flagID, pagination.CurrentPage, pagination.PageSize, flag.Period)
-
-	code = e.SUCCESS
-	c.JSON(http.StatusOK, gin.H{
-		"code":  code,
-		"msg":   e.GetMsg(code),
-		"data":  data,
-		"total": total,
-	})
-}
-
 // FlagDetail FlagDetail
 func FlagDetail(c *gin.Context) {
 	code := e.INVALID_PARAMS
@@ -481,6 +347,7 @@ func FlagDetail(c *gin.Context) {
 		RemainingAmount: flag.RemainingAmount,
 		RemainingDays:   flag.RemainingDays,
 		Period:          flag.Period,
+		TotalPeriod:     flag.TotalPeriod,
 	}
 	// current user is not flag creator
 	// fetch witness
