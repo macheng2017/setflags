@@ -36,9 +36,10 @@ func UploadEvidence(c *gin.Context) {
 
 	// check flag exist.
 	if !models.UserExist(userID) {
+		code = e.ERROR_NOT_FOUND_USER
 		c.JSON(http.StatusNotFound, gin.H{
 			"code": code,
-			"msg":  "not found specific user.",
+			"msg":  e.GetMsg(code),
 			"data": make(map[string]interface{}),
 		})
 		return
@@ -68,9 +69,10 @@ func UploadEvidence(c *gin.Context) {
 
 	// check flag exist.
 	if !models.FlagExists(flagID) {
+		code = e.ERROR_NOT_FOUND_FLAG
 		c.JSON(http.StatusNotFound, gin.H{
 			"code": code,
-			"msg":  "not found specific flag.",
+			"msg":  e.GetMsg(code),
 			"data": make(map[string]interface{}),
 		})
 		return
@@ -79,33 +81,25 @@ func UploadEvidence(c *gin.Context) {
 	flag := models.FindFlagByID(flagID)
 
 	if flag.PayerID != userID {
+		code = e.ERROR_FLAGER_NOT_CURRENT_USER
 		c.JSON(http.StatusBadRequest, gin.H{
 			"code": code,
-			"msg":  "current user not this flag's creator.",
+			"msg":  e.GetMsg(code),
 			"data": make(map[string]interface{}),
 		})
 		return
 	}
 
-	// upload attachment
-	// user := &mixin.User{
-	// 	UserID:    setting.GetConfig().Bot.ClientID.String(),
-	// 	SessionID: setting.GetConfig().Bot.SessionID,
-	// 	PINToken:  setting.GetConfig().Bot.PinToken,
-	// }
-
-	// block, _ := pem.Decode([]byte(setting.GetConfig().Bot.PrivateKey))
-	// privateKey, err := x509.ParsePKCS1PrivateKey(block.Bytes)
-	// if err != nil {
-	// 	c.JSON(http.StatusInternalServerError, gin.H{
-	// 		"code": 500,
-	// 		"msg":  err.Error(),
-	// 		"data": make(map[string]interface{}),
-	// 	})
-	// 	return
-	// }
-
-	// user.SetPrivateKey(privateKey)
+	// flag's creator not yet paid.
+	if flag.Period == 0 {
+		code = e.ERROR_NO_PAID
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code": code,
+			"msg":  e.GetMsg(code),
+			"data": make(map[string]interface{}),
+		})
+		return
+	}
 
 	ctx := context.Background()
 	attachment, err := global.Bot.CreateAttachment(ctx)
@@ -189,11 +183,11 @@ func ListEvidencesWithPeriod(c *gin.Context) {
 
 	c.ShouldBindQuery(&pagination)
 
-	if pagination.CurrentPage == 0 {
+	if pagination.CurrentPage < 1 {
 		pagination.CurrentPage = 1
 	}
 
-	if pagination.PageSize == 0 {
+	if pagination.PageSize < 1 {
 		pagination.PageSize = setting.GetConfig().App.PageSize
 	}
 
@@ -221,7 +215,7 @@ func ListEvidencesWithPeriod(c *gin.Context) {
 	// 0 means all,
 	// -1 missing means current,
 	// greater than 0 means specific period
-	period, err := strconv.Atoi(c.DefaultQuery("period", "-1"))
+	period, err := strconv.Atoi(c.DefaultQuery("period", "0"))
 
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{

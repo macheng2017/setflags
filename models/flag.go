@@ -30,6 +30,7 @@ type Flag struct {
 	PeriodStatus    string    `json:"period_status"`
 	RemainingDays   int       `json:"remaining_days"`
 	RemainingAmount float64   `json:"remaining_amount"`
+	PaidTime        time.Time `json:"paid_time"`
 	CreatedAt       time.Time `json:"created_at"`
 	UpdatedAt       time.Time `json:"updated_at"`
 }
@@ -85,25 +86,21 @@ func GetFlagsWithVerified(pageSize, currentPage int, userID uuid.UUID) (flagSche
 	db.Model(&Flag{}).Where("status = ?", "PAID").Count(&count)
 
 	// first fetch flags
-	db.Offset(skip).Limit(pageSize).Where("status = ?", "PAID").Order("updated_at desc").Find(&flags)
-
-	// then fetch witness according to userID and flagID
-	flagIDs := make([]uuid.UUID, len(flags))
-	for i := 0; i < len(flags); i++ {
-		flagIDs = append(flagIDs, flags[i].ID)
-	}
-
-	var witnesses []Witness
-	db.Where("flag_id IN (?) and payee_id = ?", flagIDs, userID).Find(&witnesses)
+	db.Offset(skip).Limit(pageSize).Where("status = ?", "PAID").Order("created_at desc").Find(&flags)
 
 	for _, flag := range flags {
 		verified := "UNSET"
-		for _, w := range witnesses {
-			if w.FlagID != w.FlagID {
-				continue
-			}
-			verified = w.Verified
-			break
+
+		// then fetch witness according to userID, flagID, period
+		var witness Witness
+		db.Where("flag_id = ? and payee_id = ? and period = ?", flag.ID, userID, flag.Period).Select("verified").First(&witness)
+
+		if witness.Verified != "" {
+			verified = witness.Verified
+		}
+
+		if flag.PeriodStatus == "UNDONE" && flag.PayerID != userID {
+			verified = "UNDONE"
 		}
 
 		flagSchemas = append(flagSchemas, schemas.FlagSchema{
@@ -182,8 +179,7 @@ func FindFlagByID(flagID uuid.UUID) (flag Flag) {
 
 // UpdateFlagPeriodStatus update flag's period status
 func UpdateFlagPeriodStatus(flagID uuid.UUID, periodStatus string) bool {
-	// db.Model(&Flag{}).Where("id = ?", flagID).Update("period_status", strings.ToUpper(periodStatus))
-	db.Model(&Flag{}).Where("id = ?", flagID).Updates(Flag{PeriodStatus: strings.ToUpper(periodStatus), Period: 1})
+	db.Model(&Flag{}).Where("id = ?", flagID).Updates(Flag{PeriodStatus: strings.ToUpper(periodStatus)})
 	return true
 }
 
@@ -193,9 +189,10 @@ func UpdateFlagStatus(flagID uuid.UUID, status string) bool {
 	return true
 }
 
-// UpdateFlagPeriod UpdateFlagPeriod
-func UpdateFlagPeriod(flagID uuid.UUID, period int) bool {
-	db.Model(&Flag{}).Where("id = ?", flagID).Update("period", period)
+// UpdateFlagPeriodAndPeriodStatus UpdateFlagPeriodAndPeriodStatus
+func UpdateFlagPeriodAndPeriodStatus(flagID uuid.UUID, period int, periodStatus string) bool {
+	// db.Model(&Flag{}).Where("id = ?", flagID).Update("period", period)
+	db.Model(&Flag{}).Where("id = ?", flagID).Updates(Flag{PeriodStatus: strings.ToUpper(periodStatus), Period: period})
 	return true
 }
 
@@ -205,6 +202,22 @@ func UpdateFlagUserInfo(user *mixin.Profile) bool {
 		Updates(map[string]interface{}{
 			"payer_name":       user.FullName,
 			"payer_avatar_url": user.AvatarURL,
+		})
+	return true
+}
+
+// UpdateFlagRemainingAmount UpdateFlagRemainingAmount
+func UpdateFlagRemainingAmount(flagID uuid.UUID, spendAmount float64) bool {
+	db.Model(&Flag{}).Where("id = ?", flagID).UpdateColumn("remaining_amount", gorm.Expr("remaining_amount - ?", spendAmount))
+	return true
+}
+
+// ResetFlagRemainingAmountAndStatus ResetFlagRemainingAmountAndStatus
+func ResetFlagRemainingAmountAndStatus(flagID uuid.UUID, remainingAmount float64, status string) bool {
+	db.Model(&Flag{}).Where("id = ?", flagID).
+		Updates(map[string]interface{}{
+			"remaining_amount": 0,
+			"status":           strings.ToUpper(status),
 		})
 	return true
 }
@@ -249,8 +262,8 @@ func ListActiveFlags(paid bool) []*Flag {
 	return flags
 }
 
-// ListPaidFlags ListPaidFlags
-func ListPaidFlags() (flags []*Flag) {
-	db.Where("status = ?", "PAID").Select("id, days_per_period, period, created_at").Find(&flags)
+// ListPaidFlagsByStatus ListPaidFlagsByStatus
+func ListPaidFlagsByStatus(status string) (flags []*Flag) {
+	db.Where("status = ?", strings.ToUpper(status)).Find(&flags)
 	return
 }

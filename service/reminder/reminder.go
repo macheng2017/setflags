@@ -161,7 +161,7 @@ func sendTextMessage(ctx context.Context, bot *sdk.User, conversationId uuid.UUI
 	return err
 }
 
-func sendUserAppCard(ctx context.Context, bot *sdk.User, userId uuid.UUID, flag *models.Flag) error {
+func sendUserAppCard(ctx context.Context, bot *sdk.User, userID uuid.UUID, flag *models.Flag) error {
 	payer := models.FindUserByID(flag.PayerID)
 	card, _ := json.Marshal(map[string]string{
 		"app_id":      setting.GetConfig().Bot.ClientID.String(),
@@ -170,17 +170,14 @@ func sendUserAppCard(ctx context.Context, bot *sdk.User, userId uuid.UUID, flag 
 		"description": fmt.Sprintf("来自@%s 的红包", payer.IdentityNumber),
 		"action":      "https://group-redirect.droneidentity.eu" + "/flags/" + flag.ID.String(),
 	})
-	cID := UniqueConversationId(setting.GetConfig().Bot.ClientID, userId)
+	cID := UniqueConversationId(setting.GetConfig().Bot.ClientID, userID)
 	err := bot.SendMessage(ctx, &sdk.MessageRequest{
 		ConversationID: cID.String(),
 		MessageID:      uuid.Must(uuid.NewV4()).String(),
 		Category:       "APP_CARD",
 		Data:           base64.StdEncoding.EncodeToString(card),
 	})
-	if err != nil {
-		log.Println(err)
-	}
-	return nil
+	return err
 }
 
 func remindWitnesses(ctx context.Context, bot *sdk.User, flag *models.Flag, remainingDays int, task string) {
@@ -270,8 +267,56 @@ func Reminder(ctx context.Context, bot *sdk.User, newDay bool) {
 	}
 }
 
+func updateClosedFlag(ctx context.Context, bot *sdk.User) {
+	closedFlags := models.ListPaidFlagsByStatus("closed")
+
+	for _, flag := range closedFlags {
+		if flag.RemainingAmount <= 0 {
+			continue
+		}
+
+		memo := fmt.Sprintf("来自您的立志: %s, 余额返还", flag.Task)
+		_, err := bot.Transfer(ctx, &sdk.TransferInput{
+			TraceID:    uuid.Must(uuid.NewV1()).String(),
+			AssetID:    flag.AssetID.String(),
+			OpponentID: flag.PayerID.String(),
+			Amount:     fmt.Sprintf("%f", flag.RemainingAmount),
+			Memo:       memo,
+		}, setting.GetConfig().Bot.Pin)
+
+		if err != nil {
+			models.UpdateFlagStatus(flag.ID, "error")
+		} else {
+			models.ResetFlagRemainingAmountAndStatus(flag.ID, 0, "end")
+		}
+	}
+
+	// handle error flag
+	errorFlags := models.ListPaidFlagsByStatus("error")
+	for _, flag := range errorFlags {
+
+		if flag.RemainingAmount <= 0 {
+			continue
+		}
+
+		memo := fmt.Sprintf("来自您的立志: %s, 余额返还", flag.Task)
+		_, err := bot.Transfer(ctx, &sdk.TransferInput{
+			TraceID:    uuid.Must(uuid.NewV1()).String(),
+			AssetID:    flag.AssetID.String(),
+			OpponentID: flag.PayerID.String(),
+			Amount:     fmt.Sprintf("%f", flag.RemainingAmount),
+			Memo:       memo,
+		}, setting.GetConfig().Bot.Pin)
+
+		if err == nil {
+			models.ResetFlagRemainingAmountAndStatus(flag.ID, 0, "end")
+		}
+	}
+}
+
 func updateFlagPeriod(ctx context.Context, bot *sdk.User) {
-	flags := models.ListPaidFlags()
+	// fetch all paid flag
+	flags := models.ListPaidFlagsByStatus("paid")
 
 	for _, flag := range flags {
 
@@ -280,58 +325,104 @@ func updateFlagPeriod(ctx context.Context, bot *sdk.User) {
 			continue
 		}
 
-		// fmt.Println(flag.DaysPerPeriod, flag.CreatedAt, flag.Period)
 		// calculate time gap
 		// now - created / 24
-		timeDelta := time.Now().Sub(flag.CreatedAt).Hours() / 24
+		timeDelta := time.Now().UTC().Sub(flag.PaidTime).Hours() / 24
+		// timeDelta := time.Now().Sub(flag.PaidTime).Minutes()
 
 		// calcaulte period
 		// 13 / 7 + 1 = 2
 		period := int(math.Round(timeDelta/float64(flag.DaysPerPeriod))) + 1
+		// period := int(math.Round(timeDelta/float64(5))) + 1
+		fmt.Println("period", period)
 
+		var retryAmount float64
 		// retry encounter error witness
 		errorWitnesses := models.GetErrorWitnessByFlagID(flag.ID, "error")
 		for _, witness := range errorWitnesses {
+
+			if math.IsNaN(witness.Amount) || math.IsInf(witness.Amount, 0) {
+				continue
+			}
+
+			fmt.Println("retry amount", witness.Amount)
+			memo := fmt.Sprintf("来自@%s 的红包, 立志: %s, 周期: %d", flag.PayerName, flag.Task, flag.Period)
 			_, err := bot.Transfer(ctx, &sdk.TransferInput{
 				TraceID:    uuid.Must(uuid.NewV1()).String(),
 				AssetID:    witness.AssetID.String(),
 				OpponentID: witness.PayeeID.String(),
 				Amount:     fmt.Sprintf("%f", witness.Amount),
-				Memo:       setting.GetConfig().App.Name,
+				Memo:       memo,
 			}, setting.GetConfig().Bot.Pin)
 
 			if err != nil {
 				models.UpdateWitnessStatus(witness.ID, "error", witness.Amount)
 			} else {
+				retryAmount += witness.Amount
 				models.UpdateWitnessStatus(witness.ID, "paid", witness.Amount)
 			}
 		}
 
-		if flag.Period == period {
+		// update flag's remaining amount
+		if retryAmount > 0 {
+			models.UpdateFlagRemainingAmount(flag.ID, retryAmount)
+		}
+
+		fmt.Println("flag.Period", flag.Period)
+		if flag.Period >= period {
 			continue
 		}
 
-		models.UpdateFlagPeriod(flag.ID, period)
+		// update flag's period and reset period status undone
+		models.UpdateFlagPeriodAndPeriodStatus(flag.ID, period, "undone")
 
-		// send red packet
+		// fetch witness according to period and status = pending
 		witnesses := models.GetWitnessByFlagIDAndPeriod(flag.ID, flag.Period, "pending")
 
-		amount := flag.Amount * 0.5 / float64(flag.TotalPeriod) / float64(len(witnesses))
-
-		for _, witness := range witnesses {
-			_, err := bot.Transfer(ctx, &sdk.TransferInput{
-				TraceID:    uuid.Must(uuid.NewV1()).String(),
-				AssetID:    witness.AssetID.String(),
-				OpponentID: witness.PayeeID.String(),
-				Amount:     fmt.Sprintf("%f", amount),
-				Memo:       setting.GetConfig().App.Name,
-			}, setting.GetConfig().Bot.Pin)
-
-			if err != nil {
-				models.UpdateWitnessStatus(witness.ID, "error", amount)
-			} else {
-				models.UpdateWitnessStatus(witness.ID, "paid", amount)
+		// current period exist witness
+		if len(witnesses) > 0 {
+			amount := flag.Amount * setting.GetConfig().RewardRatio / float64(flag.TotalPeriod) / float64(len(witnesses))
+			fmt.Println("flag.Amount", flag.Amount, "flag.TotalPeriod", flag.TotalPeriod, "len(witnesses)", len(witnesses))
+			if math.IsNaN(amount) || math.IsInf(amount, 0) {
+				fmt.Println("abnormal amount", amount)
+				continue
 			}
+
+			fmt.Println("amount", amount)
+			var successAmount float64
+
+			for _, witness := range witnesses {
+				memo := fmt.Sprintf("来自@%s 的红包, 立志: %s, 周期: %d", flag.PayerName, flag.Task, flag.Period)
+				_, err := bot.Transfer(ctx, &sdk.TransferInput{
+					TraceID:    uuid.Must(uuid.NewV1()).String(),
+					AssetID:    witness.AssetID.String(),
+					OpponentID: witness.PayeeID.String(),
+					Amount:     fmt.Sprintf("%f", amount),
+					Memo:       memo,
+				}, setting.GetConfig().Bot.Pin)
+
+				if err != nil {
+					fmt.Printf("%v", err)
+					models.UpdateWitnessStatus(witness.ID, "error", amount)
+				} else {
+					successAmount += amount
+					models.UpdateWitnessStatus(witness.ID, "paid", amount)
+					err := sendUserAppCard(ctx, bot, witness.PayeeID, flag)
+					if err != nil {
+						fmt.Printf("消息发送失败: %v", err)
+					}
+				}
+			}
+
+			// update flag's remaining amount
+			if successAmount > 0 {
+				models.UpdateFlagRemainingAmount(flag.ID, successAmount)
+			}
+		}
+
+		// period > total period means flag closed
+		if period > flag.TotalPeriod {
+			models.UpdateFlagStatus(flag.ID, "closed")
 		}
 	}
 }
@@ -357,8 +448,12 @@ func addTimers(ctx context.Context, cron *cron.Cron, bot *sdk.User) {
 	// 	upsertAsset(ctx, bot)
 	// })
 
-	cron.AddFunc("0 * * * * ?", func() {
+	cron.AddFunc("0 */1 * * * ?", func() {
 		updateFlagPeriod(ctx, bot)
+	})
+
+	cron.AddFunc(("0 */5 * * * ?"), func() {
+		updateClosedFlag(ctx, bot)
 	})
 }
 

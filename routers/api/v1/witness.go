@@ -20,11 +20,11 @@ func GetWitnessesByPeriod(c *gin.Context) {
 
 	c.ShouldBindQuery(&pagination)
 
-	if pagination.CurrentPage == 0 {
+	if pagination.CurrentPage < 1 {
 		pagination.CurrentPage = 1
 	}
 
-	if pagination.PageSize == 0 {
+	if pagination.PageSize < 1 {
 		pagination.PageSize = setting.GetConfig().App.PageSize
 	}
 
@@ -51,7 +51,7 @@ func GetWitnessesByPeriod(c *gin.Context) {
 	// 0 means all,
 	// -1 missing means current,
 	// greater than 0 means specific period
-	period, err := strconv.Atoi(c.DefaultQuery("period", "-1"))
+	period, err := strconv.Atoi(c.DefaultQuery("period", "0"))
 
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{

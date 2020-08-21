@@ -2,6 +2,7 @@ package models
 
 import (
 	"fmt"
+	"math"
 	"set-flags/schemas"
 	"strings"
 	"time"
@@ -73,7 +74,7 @@ func upsertWitness(db *gorm.DB, flagID, payeeID, assetID uuid.UUID, op, symbol s
 	if exist == 1 {
 		tx.Model(&Witness{}).
 			Where("flag_id = ? and payee_id = ? and period = ?", flagID, payeeID, period).
-			Update("status", strings.ToUpper(verified))
+			Update("verified", strings.ToUpper(verified))
 	} else if exist == 0 {
 		if err := tx.Model(&Witness{}).Where("flag_id = ? and period = ?", flagID, period).Count(&count).Error; err != nil {
 			tx.Rollback()
@@ -109,13 +110,19 @@ func GetAllWitnessByFlagID(flagID uuid.UUID, pageSize, currentPage int) ([]schem
 	for _, witness := range witnesses {
 		var dbUser User
 		db.Where("user_id = ?", witness.PayeeID.String()).First(&dbUser)
+
+		var amount float64
+		if !math.IsNaN(witness.Amount) {
+			amount = witness.Amount
+		}
+
 		result = append(result, schemas.WitnessSchema{
 			FlagID:         flagID,
 			PayeeID:        witness.PayeeID,
 			PayeeName:      dbUser.FullName,
 			PayeeAvatarURL: dbUser.AvatarURL,
 			Symbol:         witness.Symbol,
-			Amount:         witness.Amount,
+			Amount:         amount,
 			Verified:       witness.Verified,
 			WitnessedTime:  witness.WitnessedTime,
 			Period:         witness.Period,
@@ -141,13 +148,17 @@ func GetWitnessWithPeriod(flagID uuid.UUID, pageSize, currentPage, period int) (
 	for _, witness := range witnesses {
 		var dbUser User
 		db.Where("user_id = ?", witness.PayeeID.String()).First(&dbUser)
+		var amount float64
+		if !math.IsNaN(witness.Amount) {
+			amount = witness.Amount
+		}
 		result = append(result, schemas.WitnessSchema{
 			FlagID:         flagID,
 			PayeeID:        witness.PayeeID,
 			PayeeName:      dbUser.FullName,
 			PayeeAvatarURL: dbUser.AvatarURL,
 			Symbol:         witness.Symbol,
-			Amount:         witness.Amount,
+			Amount:         amount,
 			Verified:       witness.Verified,
 			WitnessedTime:  witness.WitnessedTime,
 			Period:         witness.Period,
@@ -170,7 +181,6 @@ func GetErrorWitnessByFlagID(flagID uuid.UUID, status string) (witnesses []Witne
 
 // UpdateWitnessStatus update witness's status
 func UpdateWitnessStatus(witnessID uuid.UUID, status string, amount float64) {
-	// db.Model(&Witness{}).Where("id = ?", witnessID).Update("status", strings.ToUpper(status))
 	db.Model(&Witness{}).Where("id = ?", witnessID).Updates(map[string]interface{}{
 		"status": strings.ToUpper(status),
 		"amount": amount,
@@ -179,6 +189,8 @@ func UpdateWitnessStatus(witnessID uuid.UUID, status string, amount float64) {
 
 // BeforeCreate will set field CreatedAt.
 func (w *Witness) BeforeCreate(scope *gorm.Scope) error {
+	witnessID, _ := uuid.NewV4()
+	scope.SetColumn("ID", witnessID)
 	scope.SetColumn("CreatedAt", time.Now())
 	scope.SetColumn("WitnessedTime", time.Now())
 	return nil

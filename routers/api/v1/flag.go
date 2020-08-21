@@ -8,6 +8,7 @@ import (
 	"set-flags/pkg/logging"
 	"set-flags/pkg/setting"
 	"set-flags/schemas"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/gofrs/uuid"
@@ -35,15 +36,24 @@ func ListFlags(c *gin.Context) {
 	}
 	userID, _ := uuid.FromString(header.XUSERID)
 
+	if !models.UserExist(userID) {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code": code,
+			"msg":  fmt.Sprintf("not found current user."),
+			"data": make(map[string]interface{}),
+		})
+		return
+	}
+
 	var pagination schemas.Pagination
 
 	c.ShouldBindQuery(&pagination)
 
-	if pagination.CurrentPage == 0 {
+	if pagination.CurrentPage < 1 {
 		pagination.CurrentPage = 1
 	}
 
-	if pagination.PageSize == 0 {
+	if pagination.PageSize < 1 {
 		pagination.PageSize = setting.GetConfig().App.PageSize
 	}
 
@@ -155,7 +165,6 @@ func CreateFlag(c *gin.Context) {
 	flagID := models.CreateFlag(&flag, user)
 
 	assetID := flag.AssetID.String()
-	assetID = "965e5c6e-434c-3fa9-b780-c50f43cd955c"
 	memo := "转账给励志机器人."
 	appID := setting.GetConfig().Bot.ClientID.String()
 
@@ -202,7 +211,16 @@ func UpdateFlag(c *gin.Context) {
 		})
 		return
 	}
+
 	userID, _ := uuid.FromString(header.XUSERID)
+	if !models.UserExist(userID) {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code": code,
+			"msg":  fmt.Sprintf("not found current user."),
+			"data": make(map[string]interface{}),
+		})
+		return
+	}
 
 	flagID, err := uuid.FromString(c.Param("id"))
 	if err != nil {
@@ -224,16 +242,36 @@ func UpdateFlag(c *gin.Context) {
 	}
 	flag := models.FindFlagByID(flagID)
 
+	if flag.Status == "CLOSED" {
+		code = e.ERROR_NO_PAID
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code": code,
+			"msg":  e.GetMsg(code),
+			"data": make(map[string]interface{}),
+		})
+		return
+	}
+
 	op := c.Param("op")
 
 	if flag.PayerID == userID && op == "done" {
 		code = e.SUCCESS
 		models.UpdateFlagPeriodStatus(flagID, op)
 	} else if flag.PayerID != userID && (op == "yes" || op == "no") {
+		// need flag creator upload evidence
+		if flag.PeriodStatus != strings.ToUpper("done") {
+			code = e.NOT_UPLOAD_EVIDENCE
+			c.JSON(http.StatusBadRequest, gin.H{
+				"code": code,
+				"msg":  "current period not upload evidence.",
+				"data": make(map[string]interface{}),
+			})
+			return
+		}
 		err := models.UpsertWitness(flagID, userID, flag.AssetID, op, flag.Symbol, flag.Period, flag.MaxWitness)
 		if err != nil {
 			code = e.ERROR
-			c.JSON(http.StatusOK, gin.H{
+			c.JSON(http.StatusBadRequest, gin.H{
 				"code": code,
 				"msg":  err.Error(),
 				"data": make(map[string]interface{}),
@@ -262,18 +300,6 @@ func UpdateFlag(c *gin.Context) {
 func FindFlagsByUserID(c *gin.Context) {
 	code := e.INVALID_PARAMS
 
-	var pagination schemas.Pagination
-
-	c.ShouldBindQuery(&pagination)
-
-	if pagination.CurrentPage == 0 {
-		pagination.CurrentPage = 1
-	}
-
-	if pagination.PageSize == 0 {
-		pagination.PageSize = setting.GetConfig().App.PageSize
-	}
-
 	var header schemas.Header
 
 	if err := c.BindHeader(&header); err != nil {
@@ -285,6 +311,27 @@ func FindFlagsByUserID(c *gin.Context) {
 		return
 	}
 	userID, _ := uuid.FromString(header.XUSERID)
+
+	if !models.UserExist(userID) {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code": code,
+			"msg":  fmt.Sprintf("not found current user."),
+			"data": make(map[string]interface{}),
+		})
+		return
+	}
+
+	var pagination schemas.Pagination
+
+	c.ShouldBindQuery(&pagination)
+
+	if pagination.CurrentPage < 1 {
+		pagination.CurrentPage = 1
+	}
+
+	if pagination.PageSize < 1 {
+		pagination.PageSize = setting.GetConfig().App.PageSize
+	}
 
 	flags, total := models.FindFlagsByUserID(userID, pagination.CurrentPage, pagination.PageSize)
 
@@ -311,7 +358,16 @@ func FlagDetail(c *gin.Context) {
 		})
 		return
 	}
+
 	userID, _ := uuid.FromString(header.XUSERID)
+	if !models.UserExist(userID) {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code": code,
+			"msg":  fmt.Sprintf("not found current user."),
+			"data": make(map[string]interface{}),
+		})
+		return
+	}
 
 	flagID, err := uuid.FromString(c.Query("flag_id"))
 
@@ -321,6 +377,16 @@ func FlagDetail(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"code": code,
 			"msg":  err.Error(),
+			"data": make(map[string]interface{}),
+		})
+		return
+	}
+
+	if !models.FlagExists(flagID) {
+		code = e.ERROR_NOT_FOUND_FLAG
+		c.JSON(http.StatusNotFound, gin.H{
+			"code": code,
+			"msg":  e.GetMsg(code),
 			"data": make(map[string]interface{}),
 		})
 		return
@@ -353,7 +419,13 @@ func FlagDetail(c *gin.Context) {
 	// fetch witness
 	if userID != flag.PayerID {
 		witness := models.GetWitnessByFlagIDAndPayeeID(flagID, userID, flag.Period)
-		flagSchema.Verified = witness.Verified
+		if witness.Verified != "" {
+			flagSchema.Verified = witness.Verified
+		}
+
+		if flag.PeriodStatus == "UNDONE" {
+			flagSchema.Verified = "UNDONE"
+		}
 	}
 
 	code = e.SUCCESS
